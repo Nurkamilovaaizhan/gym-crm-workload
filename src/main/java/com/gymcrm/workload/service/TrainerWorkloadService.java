@@ -5,157 +5,206 @@ import com.gymcrm.workload.dto.MonthSummaryDto;
 import com.gymcrm.workload.dto.TrainerWorkloadRequest;
 import com.gymcrm.workload.dto.TrainerWorkloadResponseDto;
 import com.gymcrm.workload.dto.YearSummaryDto;
-import com.gymcrm.workload.entity.TrainerWorkload;
-import com.gymcrm.workload.repository.TrainerWorkloadRepository;
+import com.gymcrm.workload.entity.TrainerTrainingSummary;
+import com.gymcrm.workload.repository.TrainerTrainingSummaryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 public class TrainerWorkloadService {
 
-    private final TrainerWorkloadRepository trainerWorkloadRepository;
+    private final TrainerTrainingSummaryRepository trainerTrainingSummaryRepository;
 
-    public TrainerWorkloadService(TrainerWorkloadRepository trainerWorkloadRepository) {
-        this.trainerWorkloadRepository = trainerWorkloadRepository;
+    public TrainerWorkloadService(TrainerTrainingSummaryRepository trainerTrainingSummaryRepository) {
+        this.trainerTrainingSummaryRepository = trainerTrainingSummaryRepository;
     }
 
-    @Transactional
     public void acceptWorkload(TrainerWorkloadRequest request) {
+        acceptWorkload(request, null);
+    }
+
+    public void acceptWorkload(TrainerWorkloadRequest request, String transactionId) {
+        validateRequest(request);
+
         int year = request.getTrainingDate().getYear();
         int month = request.getTrainingDate().getMonthValue();
 
-        TrainerWorkload existing = trainerWorkloadRepository
-                .findByTrainerUsernameAndWorkYearAndWorkMonth(request.getTrainerUsername(), year, month)
-                .orElse(null);
+        TrainerTrainingSummary summary = trainerTrainingSummaryRepository
+                .findByTrainerUsername(request.getTrainerUsername())
+                .orElseGet(() -> createSummary(request));
+
+        summary.setTrainerFirstName(request.getTrainerFirstName());
+        summary.setTrainerLastName(request.getTrainerLastName());
+        summary.setTrainerStatus(request.isActive());
+
+        TrainerTrainingSummary.YearSummary yearSummary = findOrCreateYear(summary, year);
+        TrainerTrainingSummary.MonthSummary monthSummary = findOrCreateMonth(yearSummary, month);
+
+        int currentDuration = monthSummary.getTrainingSummaryDuration();
 
         if (request.getActionType() == ActionType.ADD) {
-            TrainerWorkload workload = existing != null ? existing : createWorkload(request, year, month);
-            workload.setTrainerFirstName(request.getTrainerFirstName());
-            workload.setTrainerLastName(request.getTrainerLastName());
-            workload.setActive(request.isActive());
-            workload.setTrainingSummaryDuration(
-                    workload.getTrainingSummaryDuration() + request.getTrainingDuration()
-            );
-            trainerWorkloadRepository.save(workload);
-            log.info("Added workload for trainer={}, year={}, month={}, duration={}",
-                    request.getTrainerUsername(), year, month, request.getTrainingDuration());
-            return;
+            monthSummary.setTrainingSummaryDuration(currentDuration + request.getTrainingDuration());
+            log.info("transactionId={}, added workload for trainer={}, year={}, month={}, duration={}",
+                    transactionId, request.getTrainerUsername(), year, month, request.getTrainingDuration());
+        } else {
+            int updatedDuration = Math.max(0, currentDuration - request.getTrainingDuration());
+            monthSummary.setTrainingSummaryDuration(updatedDuration);
+            log.info("transactionId={}, reduced workload for trainer={}, year={}, month={}, duration={}",
+                    transactionId, request.getTrainerUsername(), year, month, request.getTrainingDuration());
         }
 
-        if (existing == null) {
-            log.warn("DELETE workload ignored, no existing record for trainer={}, year={}, month={}",
-                    request.getTrainerUsername(), year, month);
-            return;
-        }
+        trainerTrainingSummaryRepository.save(summary);
 
-        int updatedDuration = existing.getTrainingSummaryDuration() - request.getTrainingDuration();
-        if (updatedDuration <= 0) {
-            trainerWorkloadRepository.delete(existing);
-            log.info("Deleted workload row for trainer={}, year={}, month={}",
-                    request.getTrainerUsername(), year, month);
-            return;
-        }
-
-        existing.setTrainerFirstName(request.getTrainerFirstName());
-        existing.setTrainerLastName(request.getTrainerLastName());
-        existing.setActive(request.isActive());
-        existing.setTrainingSummaryDuration(updatedDuration);
-        trainerWorkloadRepository.save(existing);
-
-        log.info("Reduced workload for trainer={}, year={}, month={}, delta={}",
-                request.getTrainerUsername(), year, month, request.getTrainingDuration());
+        log.info("transactionId={}, saved trainer workload summary, trainer={}, year={}, month={}, totalDuration={}",
+                transactionId,
+                request.getTrainerUsername(),
+                year,
+                month,
+                monthSummary.getTrainingSummaryDuration());
     }
 
-    @Transactional(readOnly = true)
     public TrainerWorkloadResponseDto getTrainerWorkload(String trainerUsername) {
-        List<TrainerWorkload> workloads = trainerWorkloadRepository
-                .findAllByTrainerUsernameOrderByWorkYearAscWorkMonthAsc(trainerUsername);
-
-        if (workloads.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                    "Trainer workload not found for username: " + trainerUsername);
-        }
-
-        return buildResponse(workloads);
-    }
-
-    @Transactional(readOnly = true)
-    public TrainerWorkloadResponseDto getTrainerWorkload(String trainerUsername, int year, int month) {
-        TrainerWorkload workload = trainerWorkloadRepository
-                .findByTrainerUsernameAndWorkYearAndWorkMonth(trainerUsername, year, month)
+        TrainerTrainingSummary summary = trainerTrainingSummaryRepository.findByTrainerUsername(trainerUsername)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND,
                         "Trainer workload not found for username: " + trainerUsername
-                                + ", year: " + year + ", month: " + month
                 ));
 
-        return buildResponse(List.of(workload));
+        return toResponse(summary);
     }
 
-    private TrainerWorkload createWorkload(TrainerWorkloadRequest request, int year, int month) {
-        TrainerWorkload workload = new TrainerWorkload();
-        workload.setTrainerUsername(request.getTrainerUsername());
-        workload.setTrainerFirstName(request.getTrainerFirstName());
-        workload.setTrainerLastName(request.getTrainerLastName());
-        workload.setActive(request.isActive());
-        workload.setWorkYear(year);
-        workload.setWorkMonth(month);
-        workload.setTrainingSummaryDuration(0);
-        return workload;
+    public TrainerWorkloadResponseDto getTrainerWorkload(String trainerUsername, int year, int month) {
+        TrainerTrainingSummary summary = trainerTrainingSummaryRepository.findByTrainerUsername(trainerUsername)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Trainer workload not found for username: " + trainerUsername
+                ));
+
+        TrainerTrainingSummary.YearSummary yearSummary = summary.getYears().stream()
+                .filter(item -> item.getYear() == year)
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Trainer workload not found for username: " + trainerUsername
+                                + ", year: " + year
+                ));
+
+        TrainerTrainingSummary.MonthSummary monthSummary = yearSummary.getMonths().stream()
+                .filter(item -> item.getMonth() == month)
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Trainer workload not found for username: " + trainerUsername
+                                + ", year: " + year
+                                + ", month: " + month
+                ));
+
+        TrainerTrainingSummary filtered = new TrainerTrainingSummary();
+        filtered.setTrainerUsername(summary.getTrainerUsername());
+        filtered.setTrainerFirstName(summary.getTrainerFirstName());
+        filtered.setTrainerLastName(summary.getTrainerLastName());
+        filtered.setTrainerStatus(summary.isTrainerStatus());
+
+        TrainerTrainingSummary.YearSummary filteredYear = new TrainerTrainingSummary.YearSummary();
+        filteredYear.setYear(year);
+        filteredYear.setMonths(List.of(monthSummary));
+
+        filtered.setYears(List.of(filteredYear));
+
+        return toResponse(filtered);
     }
 
-    private TrainerWorkloadResponseDto buildResponse(List<TrainerWorkload> workloads) {
-        TrainerWorkload first = workloads.get(0);
+    private TrainerTrainingSummary createSummary(TrainerWorkloadRequest request) {
+        TrainerTrainingSummary summary = new TrainerTrainingSummary();
+        summary.setTrainerUsername(request.getTrainerUsername());
+        summary.setTrainerFirstName(request.getTrainerFirstName());
+        summary.setTrainerLastName(request.getTrainerLastName());
+        summary.setTrainerStatus(request.isActive());
+        return summary;
+    }
 
+    private TrainerTrainingSummary.YearSummary findOrCreateYear(TrainerTrainingSummary summary, int year) {
+        return summary.getYears().stream()
+                .filter(item -> item.getYear() == year)
+                .findFirst()
+                .orElseGet(() -> {
+                    TrainerTrainingSummary.YearSummary yearSummary = new TrainerTrainingSummary.YearSummary();
+                    yearSummary.setYear(year);
+                    summary.getYears().add(yearSummary);
+                    return yearSummary;
+                });
+    }
+
+    private TrainerTrainingSummary.MonthSummary findOrCreateMonth(TrainerTrainingSummary.YearSummary yearSummary,
+                                                                  int month) {
+        return yearSummary.getMonths().stream()
+                .filter(item -> item.getMonth() == month)
+                .findFirst()
+                .orElseGet(() -> {
+                    TrainerTrainingSummary.MonthSummary monthSummary = new TrainerTrainingSummary.MonthSummary();
+                    monthSummary.setMonth(month);
+                    monthSummary.setTrainingSummaryDuration(0);
+                    yearSummary.getMonths().add(monthSummary);
+                    return monthSummary;
+                });
+    }
+
+    private TrainerWorkloadResponseDto toResponse(TrainerTrainingSummary summary) {
         TrainerWorkloadResponseDto response = new TrainerWorkloadResponseDto();
-        response.setTrainerUsername(first.getTrainerUsername());
-        response.setTrainerFirstName(first.getTrainerFirstName());
-        response.setTrainerLastName(first.getTrainerLastName());
-        response.setTrainerStatus(first.isActive() ? "ACTIVE" : "INACTIVE");
+        response.setTrainerUsername(summary.getTrainerUsername());
+        response.setTrainerFirstName(summary.getTrainerFirstName());
+        response.setTrainerLastName(summary.getTrainerLastName());
+        response.setTrainerStatus(summary.isTrainerStatus());
 
-        Map<Integer, List<TrainerWorkload>> yearsMap = workloads.stream()
-                .collect(Collectors.groupingBy(
-                        TrainerWorkload::getWorkYear,
-                        TreeMap::new,
-                        Collectors.toList()
-                ));
+        List<YearSummaryDto> years = summary.getYears().stream()
+                .sorted(Comparator.comparingInt(TrainerTrainingSummary.YearSummary::getYear))
+                .map(yearSummary -> {
+                    YearSummaryDto yearDto = new YearSummaryDto();
+                    yearDto.setYear(yearSummary.getYear());
 
-        List<YearSummaryDto> years = new ArrayList<>();
-        for (Map.Entry<Integer, List<TrainerWorkload>> yearEntry : yearsMap.entrySet()) {
-            YearSummaryDto yearDto = new YearSummaryDto();
-            yearDto.setYear(yearEntry.getKey());
+                    List<MonthSummaryDto> months = yearSummary.getMonths().stream()
+                            .sorted(Comparator.comparingInt(TrainerTrainingSummary.MonthSummary::getMonth))
+                            .map(monthSummary -> {
+                                MonthSummaryDto monthDto = new MonthSummaryDto();
+                                monthDto.setMonth(monthSummary.getMonth());
+                                monthDto.setTrainingSummaryDuration(monthSummary.getTrainingSummaryDuration());
+                                return monthDto;
+                            })
+                            .toList();
 
-            Map<Integer, List<TrainerWorkload>> monthsMap = yearEntry.getValue().stream()
-                    .collect(Collectors.groupingBy(
-                            TrainerWorkload::getWorkMonth,
-                            TreeMap::new,
-                            Collectors.toList()
-                    ));
-
-            List<MonthSummaryDto> months = new ArrayList<>();
-            for (Map.Entry<Integer, List<TrainerWorkload>> monthEntry : monthsMap.entrySet()) {
-                MonthSummaryDto monthDto = new MonthSummaryDto();
-                monthDto.setMonth(monthEntry.getKey());
-                monthDto.setTrainingSummaryDuration(monthEntry.getValue().get(0).getTrainingSummaryDuration());
-                months.add(monthDto);
-            }
-
-            yearDto.setMonths(months);
-            years.add(yearDto);
-        }
+                    yearDto.setMonths(months);
+                    return yearDto;
+                })
+                .toList();
 
         response.setYears(years);
         return response;
+    }
+
+    private void validateRequest(TrainerWorkloadRequest request) {
+        if (request.getTrainerUsername() == null || request.getTrainerUsername().isBlank()) {
+            throw new IllegalArgumentException("Trainer username is required");
+        }
+        if (request.getTrainerFirstName() == null || request.getTrainerFirstName().isBlank()) {
+            throw new IllegalArgumentException("Trainer first name is required");
+        }
+        if (request.getTrainerLastName() == null || request.getTrainerLastName().isBlank()) {
+            throw new IllegalArgumentException("Trainer last name is required");
+        }
+        if (request.getTrainingDate() == null) {
+            throw new IllegalArgumentException("Training date is required");
+        }
+        if (request.getTrainingDuration() <= 0) {
+            throw new IllegalArgumentException("Training duration must be greater than zero");
+        }
+        if (request.getActionType() == null) {
+            throw new IllegalArgumentException("Action type is required");
+        }
     }
 }
