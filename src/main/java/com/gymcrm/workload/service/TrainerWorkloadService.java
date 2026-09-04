@@ -160,7 +160,7 @@ public class TrainerWorkloadService {
         response.setTrainerUsername(summary.getTrainerUsername());
         response.setTrainerFirstName(summary.getTrainerFirstName());
         response.setTrainerLastName(summary.getTrainerLastName());
-        response.setTrainerStatus(summary.isTrainerStatus());
+        response.setActive(summary.isTrainerStatus());
 
         List<YearSummaryDto> years = summary.getYears().stream()
                 .sorted(Comparator.comparingInt(TrainerTrainingSummary.YearSummary::getYear))

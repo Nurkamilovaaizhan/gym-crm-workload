@@ -188,7 +188,7 @@ class TrainerWorkloadServiceTest {
         assertThat(response.getTrainerUsername()).isEqualTo("Oscar.Piastri");
         assertThat(response.getTrainerFirstName()).isEqualTo("Oscar");
         assertThat(response.getTrainerLastName()).isEqualTo("Piastri");
-        assertThat(response.isTrainerStatus()).isTrue();
+        assertThat(response.isActive()).isTrue();
 
         assertThat(response.getYears()).hasSize(1);
         assertThat(response.getYears().get(0).getYear()).isEqualTo(2026);

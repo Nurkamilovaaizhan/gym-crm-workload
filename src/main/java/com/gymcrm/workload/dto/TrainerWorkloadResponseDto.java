@@ -10,6 +10,6 @@ public class TrainerWorkloadResponseDto {
     private String trainerUsername;
     private String trainerFirstName;
     private String trainerLastName;
-    private boolean trainerStatus;
+    private boolean isActive;
     private List<YearSummaryDto> years = new ArrayList<>();
 }
