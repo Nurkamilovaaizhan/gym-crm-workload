@@ -31,7 +31,7 @@ public class TrainerWorkloadListener {
             log.info("Workload message received, transactionId={}, trainer={}, action={}",
                     transactionId, request.getTrainerUsername(), request.getActionType());
 
-            trainerWorkloadService.acceptWorkload(request);
+            trainerWorkloadService.acceptWorkload(request, transactionId);
         } catch (JsonProcessingException ex) {
             throw new IllegalArgumentException("Invalid workload message format", ex);
         }
