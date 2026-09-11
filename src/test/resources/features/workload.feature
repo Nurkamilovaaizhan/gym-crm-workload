@@ -1,11 +1,11 @@
 Feature: Workload component
 
-  Scenario: Add trainer workload
+  Scenario: Get trainer workload successfully
     Given workload component is ready
-    When I add 60 minutes for trainer
-    Then workload duration is 60 minutes
+    When I request workload for trainer
+    Then workload response contains 60 minutes
 
-  Scenario: Reject invalid workload
+  Scenario: Get unknown trainer workload
     Given workload component is ready
-    When I add invalid workload
-    Then workload validation error is returned
+    When I request workload for unknown trainer
+    Then workload request returns not found
